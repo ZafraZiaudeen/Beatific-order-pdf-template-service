@@ -140,7 +140,16 @@ def extract_text(page: fitz.Page):
     return extracted
 
 
-def find_canela_font(family: str, style: str) -> str | None:
+def find_canela_font(family: str, style: str, font_file: str | None = None) -> str | None:
+    if font_file and CANELA_DIR.exists():
+        requested = Path(str(font_file)).name
+        direct = CANELA_DIR / requested
+        if direct.exists():
+            return str(direct)
+        for path in list(CANELA_DIR.rglob("*.otf")) + list(CANELA_DIR.rglob("*.ttf")):
+            if path.name.lower() == requested.lower():
+                return str(path)
+
     if not family or "canela" not in family.lower() or not CANELA_DIR.exists():
         return None
     family_key = re.sub(r"\s+", "", family).lower()
@@ -197,7 +206,9 @@ def apply_template_fields(doc: fitz.Document, target: str, fields: list[dict], v
         fontsize = float(field.get("fontSize") or 12)
         family = field.get("fontFamily") or "Arial"
         style = field.get("fontStyle") or "normal"
-        fontfile = find_canela_font(family, style)
+        fontfile = find_canela_font(family, style, field.get("fontFile"))
+        rotation = float(field.get("rotation") or 0)
+        snapped_rotation = int(round(rotation / 90.0)) * 90
 
         kwargs = {
             "fontsize": fontsize,
@@ -210,7 +221,7 @@ def apply_template_fields(doc: fitz.Document, target: str, fields: list[dict], v
         else:
             kwargs["fontname"] = "helv"
 
-        result = page.insert_textbox(rect, value, **kwargs)
+        result = page.insert_textbox(rect, value, rotate=snapped_rotation, **kwargs)
         if isinstance(result, (int, float)) and result < 0:
             warnings.append(f"{field.get('label') or key} is too long for its allocated text box")
 
