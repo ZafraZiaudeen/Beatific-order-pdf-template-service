@@ -11,17 +11,33 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / "Beatific-order-backend" / ".env")
-load_dotenv(Path(__file__).resolve().parent / ".env")
+SERVICE_ROOT = Path(__file__).resolve().parent
+load_dotenv(SERVICE_ROOT / ".env")
 
-OUTPUT_DIR = Path(os.environ.get("PDF_TEMPLATE_OUTPUT_DIR", Path(__file__).resolve().parent / "outputs"))
+OUTPUT_DIR = Path(os.environ.get("PDF_TEMPLATE_OUTPUT_DIR", SERVICE_ROOT / "outputs"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-PORT = int(os.environ.get("PDF_TEMPLATE_PORT") or "5055")
+PORT = int(os.environ.get("PDF_TEMPLATE_PORT") or os.environ.get("PORT") or "5055")
 BASE_URL = os.environ.get("PDF_TEMPLATE_BASE_URL", f"http://localhost:{PORT}").rstrip("/")
 CANELA_DIR = Path(os.environ.get("CANELA_FONT_DIR", ROOT / "Canela_Collection"))
+SERVICE_API_KEY = os.environ.get("PDF_TEMPLATE_API_KEY", "").strip()
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("PDF_TEMPLATE_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=ALLOWED_ORIGINS or "*")
+
+
+@app.before_request
+def require_service_api_key():
+    if not SERVICE_API_KEY or request.method == "OPTIONS" or not request.path.startswith("/api/"):
+        return None
+    provided = request.headers.get("x-pdf-template-api-key", "").strip()
+    if provided != SERVICE_API_KEY:
+        return jsonify({"success": False, "message": "Unauthorized PDF template request"}), 401
+    return None
 
 
 def cloudinary_enabled():
@@ -175,6 +191,47 @@ def find_canela_font(family: str, style: str, font_file: str | None = None) -> s
     return scored[0][1] if scored and scored[0][0] > 0 else None
 
 
+def safe_float(value, fallback: float) -> float:
+    try:
+        parsed = float(value)
+        return parsed if parsed > 0 else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def insert_fitted_textbox(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    value: str,
+    field: dict,
+    kwargs: dict,
+    snapped_rotation: int,
+    warnings: list[str],
+) -> None:
+    label = field.get("label") or field.get("key") or "Template field"
+    original_size = safe_float(kwargs.get("fontsize"), 12)
+    min_size = min(original_size, max(6.0, original_size * 0.65))
+    font_size = original_size
+    last_result = 0
+
+    while font_size >= min_size - 0.01:
+        attempt_kwargs = {**kwargs, "fontsize": round(font_size, 2)}
+        result = page.insert_textbox(rect, value, rotate=snapped_rotation, **attempt_kwargs)
+        last_result = result if isinstance(result, (int, float)) else 0
+        if not isinstance(result, (int, float)) or result >= 0:
+            if font_size < original_size - 0.01:
+                warnings.append(
+                    f"{label} was fitted by reducing font size from {original_size:g} pt to {font_size:g} pt"
+                )
+            return
+        font_size -= 0.5
+
+    warnings.append(
+        f"{label} does not fit its marked text box even at {min_size:g} pt; "
+        f"increase the marked box size or shorten the value (overflow {abs(last_result):.1f} pt)."
+    )
+
+
 def apply_template_fields(doc: fitz.Document, target: str, fields: list[dict], values: dict, warnings: list[str]):
     if doc.page_count == 0:
         return
@@ -214,6 +271,7 @@ def apply_template_fields(doc: fitz.Document, target: str, fields: list[dict], v
             "fontsize": fontsize,
             "color": hex_to_rgb(field.get("fill") or "#000000"),
             "align": align,
+            "lineheight": safe_float(field.get("lineHeight"), 1.2),
         }
         if fontfile:
             kwargs["fontfile"] = fontfile
@@ -221,9 +279,7 @@ def apply_template_fields(doc: fitz.Document, target: str, fields: list[dict], v
         else:
             kwargs["fontname"] = "helv"
 
-        result = page.insert_textbox(rect, value, rotate=snapped_rotation, **kwargs)
-        if isinstance(result, (int, float)) and result < 0:
-            warnings.append(f"{field.get('label') or key} is too long for its allocated text box")
+        insert_fitted_textbox(page, rect, value, field, kwargs, snapped_rotation, warnings)
 
 
 def save_pdf(doc: fitz.Document, filename: str) -> str:
