@@ -10,15 +10,22 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-ROOT = Path(__file__).resolve().parents[1]
 SERVICE_ROOT = Path(__file__).resolve().parent
 load_dotenv(SERVICE_ROOT / ".env")
 
-OUTPUT_DIR = Path(os.environ.get("PDF_TEMPLATE_OUTPUT_DIR", SERVICE_ROOT / "outputs"))
+def service_path_from_env(name: str, fallback: Path) -> Path:
+    value = os.environ.get(name)
+    if not value:
+        return fallback
+    path = Path(value)
+    return path if path.is_absolute() else SERVICE_ROOT / path
+
+
+OUTPUT_DIR = service_path_from_env("PDF_TEMPLATE_OUTPUT_DIR", SERVICE_ROOT / "outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 PORT = int(os.environ.get("PDF_TEMPLATE_PORT") or os.environ.get("PORT") or "5055")
 BASE_URL = os.environ.get("PDF_TEMPLATE_BASE_URL", f"http://localhost:{PORT}").rstrip("/")
-CANELA_DIR = Path(os.environ.get("CANELA_FONT_DIR", ROOT / "Canela_Collection"))
+CANELA_DIR = service_path_from_env("CANELA_FONT_DIR", SERVICE_ROOT / "fonts" / "Canela_Collection")
 SERVICE_API_KEY = os.environ.get("PDF_TEMPLATE_API_KEY", "").strip()
 ALLOWED_ORIGINS = [
     origin.strip()
